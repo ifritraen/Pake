@@ -5,29 +5,60 @@ export const DEFAULT_PAKE_OPTIONS: PakeCliOptions = {
   height: 780,
   width: 1200,
   fullscreen: false,
+  maximize: false,
   resizable: true,
   hideTitleBar: false,
   alwaysOnTop: false,
+  appVersion: '1.0.0',
   darkMode: false,
   disabledWebShortcuts: false,
   activationShortcut: '',
   userAgent: '',
   showSystemTray: false,
   multiArch: false,
-  targets: 'deb',
+  targets: (() => {
+    switch (process.platform) {
+      case 'linux':
+        return 'deb,appimage';
+      case 'darwin':
+        return 'dmg';
+      case 'win32':
+        return 'msi';
+      default:
+        return 'deb';
+    }
+  })(),
   useLocalFile: false,
   systemTrayIcon: '',
+  proxyUrl: '',
   debug: false,
   inject: [],
-  safeDomain: [],
   installerLanguage: 'en-US',
+  hideOnClose: undefined, // Platform-specific: true for macOS, false for others
+  incognito: false,
+  wasm: false,
+  enableDragDrop: false,
+  keepBinary: false,
+  multiInstance: false,
+  multiWindow: false,
+  startToTray: false,
+  forceInternalNavigation: false,
+  internalUrlRegex: '',
+  iterativeBuild: false,
+  zoom: 100,
+  minWidth: 0,
+  minHeight: 0,
+  ignoreCertificateErrors: false,
+  newWindow: false,
+  install: false,
+  camera: false,
+  microphone: false,
 };
 
 // Just for cli development
 export const DEFAULT_DEV_PAKE_OPTIONS: PakeCliOptions & { url: string } = {
   ...DEFAULT_PAKE_OPTIONS,
-  url: 'https://weread.qq.com',
-  name: 'WeRead',
-  safeDomain: ['weread.qq.com'],
+  url: 'https://weekly.tw93.fun/en',
+  name: 'Weekly',
   hideTitleBar: true,
 };

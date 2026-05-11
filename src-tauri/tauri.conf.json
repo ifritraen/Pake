@@ -1,39 +1,20 @@
 {
-  "package": {
-    "productName": "WeRead",
-    "version": "1.0.0"
-  },
-  "tauri": {
+  "productName": "Weekly",
+  "identifier": "com.pake.weekly",
+  "version": "3.11.5",
+  "app": {
+    "withGlobalTauri": true,
+    "trayIcon": {
+      "iconPath": "png/weekly_512.png",
+      "iconAsTemplate": false,
+      "id": "pake-tray"
+    },
     "security": {
-      "csp": null,
-      "dangerousRemoteDomainIpcAccess": [
-        {
-          "domain": "weread.qq.com",
-          "windows": ["pake"],
-          "enableTauriAPI": true
-        }
-      ]
-    },
-    "updater": {
-      "active": false
-    },
-    "systemTray": {
-      "iconPath": "png/icon_512.png",
-      "iconAsTemplate": false
-    },
-    "allowlist": {
-      "all": true,
-      "fs": {
-        "all": true,
-        "scope": ["$DOWNLOAD/*"]
-      }
+      "headers": {},
+      "csp": null
     }
   },
   "build": {
-    "withGlobalTauri": true,
-    "devPath": "../dist",
-    "distDir": "../dist",
-    "beforeBuildCommand": "",
-    "beforeDevCommand": ""
+    "frontendDist": "../dist"
   }
 }

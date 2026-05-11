@@ -1,43 +1,347 @@
 use crate::app::config::PakeConfig;
-use std::path::PathBuf;
-use tauri::{App, Window, WindowBuilder, WindowUrl};
+use crate::util::get_data_dir;
+use std::{
+    path::PathBuf,
+    str::FromStr,
+    sync::atomic::{AtomicU32, Ordering},
+};
+use tauri::{
+    webview::{NewWindowFeatures, NewWindowResponse},
+    AppHandle, Config, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
 
 #[cfg(target_os = "macos")]
 use tauri::{Theme, TitleBarStyle};
 
-pub fn build_window(app: &mut App, config: PakeConfig, _data_dir: PathBuf) -> Window {
-    let window_config = config
-        .windows
-        .first()
-        .expect("At least one window configuration is required");
+#[cfg(target_os = "windows")]
+fn build_proxy_browser_arg(url: &Url) -> Option<String> {
+    let host = url.host_str()?;
+    let scheme = url.scheme();
+    let port = url.port().or_else(|| match scheme {
+        "http" => Some(80),
+        "socks5" => Some(1080),
+        _ => None,
+    })?;
+
+    match scheme {
+        "http" | "socks5" => Some(format!("--proxy-server={scheme}://{host}:{port}")),
+        _ => None,
+    }
+}
+
+pub struct MultiWindowState {
+    pub pake_config: PakeConfig,
+    pub tauri_config: Config,
+    next_window_index: AtomicU32,
+}
+
+impl MultiWindowState {
+    pub fn new(pake_config: PakeConfig, tauri_config: Config) -> Self {
+        Self {
+            pake_config,
+            tauri_config,
+            next_window_index: AtomicU32::new(0),
+        }
+    }
+
+    fn next_window_label(&self) -> String {
+        let index = self.next_window_index.fetch_add(1, Ordering::Relaxed) + 1;
+        format!("pake-{index}")
+    }
+}
+
+pub fn set_window(
+    app: &AppHandle,
+    config: &PakeConfig,
+    tauri_config: &Config,
+) -> tauri::Result<WebviewWindow> {
+    build_window_with_label(app, config, tauri_config, "pake")
+}
+
+pub fn open_additional_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    let state = app.state::<MultiWindowState>();
+    let label = state.next_window_label();
+    build_window_with_label(app, &state.pake_config, &state.tauri_config, &label)
+}
+
+struct WindowBuildOptions<'a> {
+    label: &'a str,
+    url: WebviewUrl,
+    visible: bool,
+    new_window_features: Option<NewWindowFeatures>,
+}
+
+fn open_requested_window(
+    app: &AppHandle,
+    config: &PakeConfig,
+    tauri_config: &Config,
+    target_url: Url,
+    features: NewWindowFeatures,
+) -> tauri::Result<WebviewWindow> {
+    let state = app.state::<MultiWindowState>();
+    let label = state.next_window_label();
+    let window = build_window(
+        app,
+        config,
+        tauri_config,
+        WindowBuildOptions {
+            label: &label,
+            url: WebviewUrl::External(target_url.clone()),
+            visible: true,
+            new_window_features: Some(features),
+        },
+    )?;
+
+    let title = target_url.host_str().unwrap_or(target_url.as_str());
+    let _ = window.set_title(title);
+    let _ = window.set_focus();
+
+    Ok(window)
+}
+
+pub fn open_additional_window_safe(app: &AppHandle) {
+    #[cfg(target_os = "windows")]
+    {
+        let app_handle = app.clone();
+        std::thread::spawn(move || {
+            if let Ok(window) = open_additional_window(&app_handle) {
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        });
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Ok(window) = open_additional_window(app) {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }
+}
+
+fn build_window_with_label(
+    app: &AppHandle,
+    config: &PakeConfig,
+    tauri_config: &Config,
+    label: &str,
+) -> tauri::Result<WebviewWindow> {
+    let window_config = config.windows.first().ok_or_else(|| {
+        tauri::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "pake.json must define at least one window configuration",
+        ))
+    })?;
+    let url = match window_config.url_type.as_str() {
+        "web" => {
+            let parsed = window_config.url.parse().map_err(|err| {
+                tauri::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "Invalid 'web' url '{}' in pake.json: {err}",
+                        window_config.url
+                    ),
+                ))
+            })?;
+            WebviewUrl::App(parsed)
+        }
+        "local" => WebviewUrl::App(PathBuf::from(&window_config.url)),
+        other => {
+            return Err(tauri::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("url_type must be 'web' or 'local', got '{other}'"),
+            )));
+        }
+    };
+
+    build_window(
+        app,
+        config,
+        tauri_config,
+        WindowBuildOptions {
+            label,
+            url,
+            visible: false,
+            new_window_features: None,
+        },
+    )
+}
+
+fn build_window(
+    app: &AppHandle,
+    config: &PakeConfig,
+    tauri_config: &Config,
+    opts: WindowBuildOptions,
+) -> tauri::Result<WebviewWindow> {
+    let WindowBuildOptions {
+        label,
+        url,
+        visible,
+        new_window_features,
+    } = opts;
+    let package_name = tauri_config
+        .product_name
+        .clone()
+        .unwrap_or_else(|| "pake".to_string());
+    let _data_dir = get_data_dir(app, package_name).map_err(tauri::Error::Io)?;
+
+    let window_config = config.windows.first().ok_or_else(|| {
+        tauri::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "pake.json must define at least one window configuration",
+        ))
+    })?;
 
     let user_agent = config.user_agent.get();
 
-    let url = match window_config.url_type.as_str() {
-        "web" => WindowUrl::App(window_config.url.parse().unwrap()),
-        "local" => WindowUrl::App(PathBuf::from(&window_config.url)),
-        _ => panic!("url type can only be web or local"),
-    };
-
     let config_script = format!(
         "window.pakeConfig = {}",
-        serde_json::to_string(&window_config).unwrap()
+        serde_json::to_string(&window_config).unwrap_or_else(|_| "{}".to_string())
     );
 
-    let mut window_builder = WindowBuilder::new(app, "pake", url)
-        .title("")
-        .visible(false)
+    // Platform-specific title: macOS prefers empty, others fallback to product name
+    let effective_title = window_config.title.as_deref().unwrap_or_else(|| {
+        if cfg!(target_os = "macos") {
+            ""
+        } else {
+            tauri_config.product_name.as_deref().unwrap_or("")
+        }
+    });
+
+    let mut window_builder = WebviewWindowBuilder::new(app, label, url)
+        .title(effective_title)
+        .visible(visible)
         .user_agent(user_agent)
         .resizable(window_config.resizable)
-        .fullscreen(window_config.fullscreen)
-        .inner_size(window_config.width, window_config.height)
+        .maximized(window_config.maximize);
+
+    #[cfg(target_os = "windows")]
+    {
+        let scale_factor = app
+            .primary_monitor()
+            .ok()
+            .flatten()
+            .map(|m| m.scale_factor())
+            .unwrap_or(1.0);
+        let logical_width = window_config.width / scale_factor;
+        let logical_height = window_config.height / scale_factor;
+        window_builder = window_builder.inner_size(logical_width, logical_height);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        window_builder = window_builder.inner_size(window_config.width, window_config.height);
+    }
+
+    window_builder = window_builder
         .always_on_top(window_config.always_on_top)
+        .incognito(window_config.incognito);
+
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
+        window_builder = window_builder.fullscreen(window_config.fullscreen);
+    }
+
+    if window_config.min_width > 0.0 || window_config.min_height > 0.0 {
+        let min_w = if window_config.min_width > 0.0 {
+            window_config.min_width
+        } else {
+            window_config.width
+        };
+        let min_h = if window_config.min_height > 0.0 {
+            window_config.min_height
+        } else {
+            window_config.height
+        };
+        window_builder = window_builder.min_inner_size(min_w, min_h);
+    }
+
+    if !window_config.enable_drag_drop {
+        window_builder = window_builder.disable_drag_drop_handler();
+    }
+
+    if window_config.new_window {
+        let app_handle = app.clone();
+        let popup_config = config.clone();
+        let popup_tauri_config = tauri_config.clone();
+        window_builder = window_builder.on_new_window(move |target_url, features| {
+            match open_requested_window(
+                &app_handle,
+                &popup_config,
+                &popup_tauri_config,
+                target_url,
+                features,
+            ) {
+                Ok(window) => NewWindowResponse::Create { window },
+                Err(error) => {
+                    eprintln!("[Pake] Failed to open requested window: {error}");
+                    NewWindowResponse::Deny
+                }
+            }
+        });
+    }
+
+    // Add initialization scripts. Order matters: pakeConfig must land before
+    // any script that reads it (e.g. fullscreen polyfill checks for an opt-out
+    // flag), and toast must register `window.pakeToast` before Rust code
+    // calls show_toast().
+    window_builder = window_builder
         .initialization_script(&config_script)
-        .initialization_script(include_str!("../inject/component.js"))
+        .initialization_script(include_str!("../inject/toast.js"))
+        .initialization_script(include_str!("../inject/fullscreen.js"))
         .initialization_script(include_str!("../inject/event.js"))
         .initialization_script(include_str!("../inject/style.js"))
+        .initialization_script(include_str!("../inject/theme_refresh.js"))
+        .initialization_script(include_str!("../inject/auth.js"))
         .initialization_script(include_str!("../inject/custom.js"));
 
+    #[cfg(target_os = "windows")]
+    let mut windows_browser_args = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-blink-features=AutomationControlled");
+
+    #[cfg(target_os = "linux")]
+    let mut linux_browser_args = String::from("--disable-blink-features=AutomationControlled");
+
+    if window_config.ignore_certificate_errors {
+        #[cfg(target_os = "windows")]
+        {
+            windows_browser_args.push_str(" --ignore-certificate-errors");
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            linux_browser_args.push_str(" --ignore-certificate-errors");
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            window_builder = window_builder.additional_browser_args("--ignore-certificate-errors");
+        }
+    }
+
+    if window_config.enable_wasm {
+        #[cfg(target_os = "windows")]
+        {
+            windows_browser_args.push_str(" --enable-features=SharedArrayBuffer");
+            windows_browser_args.push_str(" --enable-unsafe-webgpu");
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            linux_browser_args.push_str(" --enable-features=SharedArrayBuffer");
+            linux_browser_args.push_str(" --enable-unsafe-webgpu");
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            window_builder = window_builder
+                .additional_browser_args("--enable-features=SharedArrayBuffer")
+                .additional_browser_args("--enable-unsafe-webgpu");
+        }
+    }
+
+    let mut parsed_proxy_url: Option<Url> = None;
+
+    // Platform-specific configuration must be set before proxy on Windows/Linux
     #[cfg(target_os = "macos")]
     {
         let title_bar_style = if window_config.hide_title_bar {
@@ -45,20 +349,117 @@ pub fn build_window(app: &mut App, config: PakeConfig, _data_dir: PathBuf) -> Wi
         } else {
             TitleBarStyle::Visible
         };
-
         window_builder = window_builder.title_bar_style(title_bar_style);
 
-        if window_config.dark_mode {
-            window_builder = window_builder.theme(Some(Theme::Dark));
+        // Default to following system theme (None), only force dark when explicitly set
+        let theme = if window_config.dark_mode {
+            Some(Theme::Dark)
+        } else {
+            None // Follow system theme
+        };
+        window_builder = window_builder.theme(theme);
+    }
+
+    // Windows and Linux: set data_directory before proxy_url
+    #[cfg(not(target_os = "macos"))]
+    {
+        window_builder = window_builder.data_directory(_data_dir).theme(None);
+
+        if !config.proxy_url.is_empty() {
+            if let Ok(proxy_url) = Url::from_str(&config.proxy_url) {
+                parsed_proxy_url = Some(proxy_url.clone());
+                #[cfg(target_os = "windows")]
+                {
+                    if let Some(arg) = build_proxy_browser_arg(&proxy_url) {
+                        windows_browser_args.push(' ');
+                        windows_browser_args.push_str(&arg);
+                    }
+                }
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            window_builder = window_builder.additional_browser_args(&windows_browser_args);
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            window_builder = window_builder.additional_browser_args(&linux_browser_args);
         }
     }
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        window_builder = window_builder
-            .data_directory(_data_dir)
-            .title(app.package_info().name.clone())
+    // Set proxy after platform-specific configs (required for Windows/Linux)
+    if parsed_proxy_url.is_none() && !config.proxy_url.is_empty() {
+        if let Ok(proxy_url) = Url::from_str(&config.proxy_url) {
+            parsed_proxy_url = Some(proxy_url);
+        }
     }
 
-    window_builder.build().expect("Failed to build window")
+    if let Some(proxy_url) = parsed_proxy_url {
+        window_builder = window_builder.proxy_url(proxy_url);
+        #[cfg(debug_assertions)]
+        println!("Proxy configured: {}", config.proxy_url);
+    }
+
+    if let Some(features) = new_window_features {
+        // Reuse only opener-provided position/size on macOS; sharing the opener
+        // WKWebViewConfiguration triggers duplicate WKScriptMessageHandler
+        // registrations on macOS 26+ and crashes the app (issue #1194).
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(position) = features.position() {
+                window_builder = window_builder.position(position.x, position.y);
+            }
+
+            if let Some(size) = features.size() {
+                window_builder = window_builder.inner_size(size.width, size.height);
+            }
+
+            window_builder = window_builder.focused(true);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            window_builder = window_builder.window_features(features).focused(true);
+        }
+    }
+
+    window_builder = window_builder.on_navigation(|_| true);
+
+    window_builder.build()
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod proxy_arg_tests {
+    use super::*;
+
+    fn parse(url: &str) -> Url {
+        Url::from_str(url).unwrap()
+    }
+
+    #[test]
+    fn http_url_with_explicit_port() {
+        let arg = build_proxy_browser_arg(&parse("http://127.0.0.1:7890")).unwrap();
+        assert_eq!(arg, "--proxy-server=http://127.0.0.1:7890");
+    }
+
+    #[test]
+    fn http_url_uses_default_port_when_missing() {
+        let arg = build_proxy_browser_arg(&parse("http://proxy.local")).unwrap();
+        assert_eq!(arg, "--proxy-server=http://proxy.local:80");
+    }
+
+    #[test]
+    fn socks5_url_uses_default_port_when_missing() {
+        let arg = build_proxy_browser_arg(&parse("socks5://proxy.local")).unwrap();
+        assert_eq!(arg, "--proxy-server=socks5://proxy.local:1080");
+    }
+
+    #[test]
+    fn https_scheme_is_not_supported_yet() {
+        // https proxies fall back to platform proxy_url; we only emit a CLI arg
+        // for http/socks5 today.
+        assert!(build_proxy_browser_arg(&parse("https://proxy.local:8443")).is_none());
+    }
 }

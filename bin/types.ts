@@ -1,10 +1,15 @@
-export interface PlatformMap {
-  [key: string]: any;
-}
+export type SupportedPlatform = 'win32' | 'darwin' | 'linux';
+export type TauriPlatform = 'windows' | 'macos' | 'linux';
 
 export interface PakeCliOptions {
   // Application name
   name?: string;
+
+  // Explicit app identifier / bundle id
+  identifier?: string;
+
+  // Window title (supports Chinese characters)
+  title?: string;
 
   // Application icon
   icon: string;
@@ -21,12 +26,17 @@ export interface PakeCliOptions {
   // Whether the window can be fullscreen, default false
   fullscreen: boolean;
 
+  // Start window maximized, default false
+  maximize: boolean;
+
   // Enable immersive header, default false.
   hideTitleBar: boolean;
 
   // Enable windows always on top, default false
   alwaysOnTop: boolean;
 
+  // App version, the same as package.json version, default 1.0.0
+  appVersion: string;
 
   // Force Mac to use dark mode, default false
   darkMode: boolean;
@@ -52,22 +62,155 @@ export interface PakeCliOptions {
   // Multi arch, supports both Intel and M1 chips, only for Mac
   multiArch: boolean;
 
-  // Package output, valid for Linux users, default is deb, optional appimage, or all (i.e., output both deb and all);
+  // Build target architecture/format:
+  // Linux: "deb", "appimage", "deb-arm64", "appimage-arm64"; Windows: "x64", "arm64"; macOS: "intel", "apple", "universal"
   targets: string;
 
   // Debug mode, outputs more logs
   debug: boolean;
 
-  /** 需要注入页面的外部脚本 */
+  /** External scripts that need to be injected into the page. */
   inject: string[];
 
-  /* the domain that can use ipc or tauri javascript sdk */
-  safeDomain: string[];
+  // Set Api Proxy
+  proxyUrl: string;
 
   // Installer language, valid for Windows users, default is en-US
   installerLanguage: string;
+
+  // Hide window on close instead of exiting, platform-specific: true for macOS, false for others
+  hideOnClose: boolean | undefined;
+
+  // Launch app in incognito/private mode, default false
+  incognito: boolean;
+
+  // Enable WebAssembly support (Flutter Web, etc.), default false
+  wasm: boolean;
+
+  // Enable drag and drop functionality, default false
+  enableDragDrop: boolean;
+
+  // Keep raw binary file alongside installer, default false
+  keepBinary: boolean;
+
+  // Allow multiple instances, default false (single instance)
+  multiInstance: boolean;
+
+  // Allow opening multiple windows in one app instance, default false
+  multiWindow: boolean;
+
+  // Start app minimized to tray, default false
+  startToTray: boolean;
+
+  // Force navigation to stay inside the Pake window even for external links
+  forceInternalNavigation: boolean;
+
+  // Regex pattern to match URLs that should be considered internal
+  internalUrlRegex: string;
+
+  // Initial page zoom level (50-200), default 100
+  zoom: number;
+
+  // Minimum window width, default 0 (no limit)
+  minWidth: number;
+
+  // Minimum window height, default 0 (no limit)
+  minHeight: number;
+
+  // Ignore certificate errors (for self-signed certs), default false
+  ignoreCertificateErrors: boolean;
+
+  // Turn on rapid build mode (app only, no dmg/deb/msi), good for debugging
+  iterativeBuild: boolean;
+
+  // Allow sites to open new windows, default false
+  newWindow: boolean;
+
+  // Auto-install app to /Applications (macOS) after build, default false
+  install: boolean;
+
+  // Request camera entitlement on macOS, default false
+  camera: boolean;
+
+  // Request microphone entitlement on macOS, default false
+  microphone: boolean;
 }
 
 export interface PakeAppOptions extends PakeCliOptions {
   identifier: string;
+}
+
+export interface PlatformSpecific<T> {
+  macos: T;
+  linux: T;
+  windows: T;
+}
+
+export interface WindowConfig {
+  url: string;
+  hide_title_bar: boolean;
+  fullscreen: boolean;
+  maximize: boolean;
+  width: number;
+  height: number;
+  resizable: boolean;
+  url_type: string;
+  always_on_top: boolean;
+  dark_mode: boolean;
+  disabled_web_shortcuts: boolean;
+  activation_shortcut: string;
+  hide_on_close: boolean;
+  incognito: boolean;
+  title?: string;
+  enable_wasm: boolean;
+  enable_drag_drop: boolean;
+  start_to_tray: boolean;
+  force_internal_navigation: boolean;
+  internal_url_regex: string;
+  zoom: number;
+  min_width: number;
+  min_height: number;
+  ignore_certificate_errors: boolean;
+  new_window: boolean;
+}
+
+export interface PakeConfig {
+  windows: WindowConfig[];
+  user_agent: PlatformSpecific<string>;
+  system_tray: PlatformSpecific<boolean>;
+  system_tray_path: string;
+  proxy_url: string;
+  multi_instance: boolean;
+  multi_window: boolean;
+  inject?: string[];
+}
+
+export interface PakeTauriConfig {
+  productName?: string;
+  identifier?: string;
+  version?: string;
+  mainBinaryName?: string;
+  pake: PakeConfig;
+  bundle: {
+    icon?: string[];
+    resources?: string[];
+    targets?: string[];
+    linux?: {
+      deb: { files?: Record<string, string> };
+      rpm?: { files?: Record<string, string> };
+      [key: string]: unknown;
+    };
+    windows?: {
+      wix: { language: string[] };
+      [key: string]: unknown;
+    };
+    [key: string]: unknown;
+  };
+  app: {
+    security?: { headers?: Record<string, string> };
+    trayIcon?: unknown;
+    [key: string]: unknown;
+  };
+  build?: unknown;
+  [key: string]: unknown;
 }

@@ -1,55 +1,57 @@
 name: Build App With Pake CLI
+
+env:
+  NODE_VERSION: "22"
+  PNPM_VERSION: "10.26.2"
+
 on:
   workflow_dispatch:
     inputs:
       platform:
-        description: 'platform'
+        description: "Platform"
         required: true
-        default: 'macos-latest'
+        default: "macos-latest"
         type: choice
         options:
-          - 'windows-latest'
-          - 'macos-latest'
-          - 'ubuntu-20.04'
+          - "windows-latest"
+          - "macos-latest"
+          - "ubuntu-24.04"
       url:
-        description: '[URL]'
+        description: "Website URL"
         required: true
       name:
-        description: '[Name]'
+        description: "App name (lowercase for Linux)"
         required: true
       icon:
-        description: '[Icon, Optional]'
+        description: "Icon URL, auto-fetch if empty"
         required: false
       width:
-        description: '[Width, Optional]'
+        description: "Window width (px)"
         required: false
-        default: '1200'
+        default: "1200"
       height:
-        description: '[Height, Optional]'
+        description: "Window height (px)"
         required: false
-        default: '780'
-      safe_domain:
-        description: '[Safe Domain, Optional]'
+        default: "780"
+      fullscreen:
+        description: "Start in fullscreen mode"
         required: false
+        type: boolean
+        default: false
       hide_title_bar:
-        description: '[Hide TitleBar, Optional, MacOS only]'
+        description: "Hide title bar (macOS only)"
         required: false
         type: boolean
         default: false
       multi_arch:
-        description: '[MultiArch, Optional, MacOS only]'
+        description: "Universal binary (macOS only)"
         required: false
         type: boolean
         default: false
       targets:
-        description: '[Targets, Optional, Linux only]'
+        description: "Package formats (comma-separated: deb,appimage,rpm)"
         required: false
-        default: 'deb'
-        type: choice
-        options:
-          - 'deb'
-          - 'appimage'
-          - 'all'
+        default: "deb"
 
 jobs:
   build:
@@ -60,49 +62,27 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6
 
-      - name: Install node
-        uses: actions/setup-node@v3
-        with:
-          node-version: 18
-
-      - name: Install Rust for ubuntu-20.04
-        if: inputs.platform == 'ubuntu-20.04'
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-          target: x86_64-unknown-linux-musl
 
-      - name: Install Rust for windows-latest
-        if: inputs.platform == 'windows-latest'
-        uses: dtolnay/rust-toolchain@stable
+      - name: Setup Node.js Environment
+        uses: ./.github/actions/setup-env
         with:
-          toolchain: stable-x86_64-msvc
-          target: x86_64-pc-windows-msvc
+          mode: build
 
-      - name: Install Rust for macos-latest
-        if: inputs.platform == 'macos-latest'
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          target: x86_64-apple-darwin
+      - name: Build CLI
+        run: pnpm run cli:build
 
-      - name: Install dependencies (ubuntu only)
-        if: inputs.platform == 'ubuntu-20.04'
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: libwebkit2gtk-4.0-dev build-essential curl wget libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev gnome-video-effects gnome-video-effects-extra
-          version: 1.1
-
-      - name: Install pake-cli local
-        shell: bash
-        run: |
-          echo "install pake on local"
-          npm install pake-cli
+      - name: Setup mold linker
+        if: runner.os == 'Linux'
+        uses: rui314/setup-mold@v1
 
       - name: Rust cache restore
-        uses: actions/cache/restore@v3
+        uses: actions/cache/restore@v4.2.0
         id: cache_store
         with:
           path: |
@@ -110,39 +90,115 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            node_modules/pake-cli/src-tauri/target/
-          key: ${{ inputs.platform }}-cargo-${{ hashFiles('node_modules/pake-cli/src-tauri/Cargo.lock') }}
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-pake-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Install dependencies
+      - name: Build App (Linux/macOS)
+        if: runner.os != 'Windows'
+        timeout-minutes: 25
+        shell: bash
         run: |
-          npm install shelljs
-          npm install axios
+          ARGS=("${{ inputs.url }}" "--name" "${{ inputs.name }}")
 
-      - name: Build with pake-cli
+          if [ -n "${{ inputs.icon }}" ]; then
+            ARGS+=("--icon" "${{ inputs.icon }}")
+          fi
+
+          if [ -n "${{ inputs.width }}" ]; then
+            ARGS+=("--width" "${{ inputs.width }}")
+          fi
+
+          if [ -n "${{ inputs.height }}" ]; then
+            ARGS+=("--height" "${{ inputs.height }}")
+          fi
+
+          if [ "${{ inputs.fullscreen }}" == "true" ]; then
+            ARGS+=("--fullscreen")
+          fi
+
+          if [ "${{ inputs.hide_title_bar }}" == "true" ]; then
+            ARGS+=("--hide-title-bar")
+          fi
+
+          if [ "${{ inputs.multi_arch }}" == "true" ]; then
+            ARGS+=("--multi-arch")
+          fi
+
+          if [ -n "${{ inputs.targets }}" ] && [ "${{ runner.os }}" == "Linux" ]; then
+            ARGS+=("--targets" "${{ inputs.targets }}")
+          fi
+
+          echo "Running: node dist/cli.js ${ARGS[@]}"
+          node dist/cli.js "${ARGS[@]}"
+
+      - name: Build App (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 25
+        shell: pwsh
         run: |
-          node ./script/build_with_pake_cli.js
-        env:
-          URL: ${{ inputs.url }}
-          NAME: ${{ inputs.name }}
-          ICON: ${{ inputs.icon }}
-          HEIGHT: ${{ inputs.height }}
-          WIDTH: ${{ inputs.width }}
-          HIDE_TITLE_BAR: ${{ inputs.hide_title_bar }}
-          FULLSCREEN: ${{ inputs.fullscreen }}
-          RESIZE: ${{ inputs.resize }}
-          MULTI_ARCH: ${{ inputs.multi_arch }}
-          TARGETS: ${{ inputs.targets }}
-          SAFE_DOMAIN: ${{ inputs.safe_domain }}
+          $args = "${{ inputs.url }}", "--name", "${{ inputs.name }}"
 
-      - name: Upload archive
-        uses: actions/upload-artifact@v3
+          if ("${{ inputs.icon }}" -ne "") {
+            $args += "--icon", "${{ inputs.icon }}"
+          }
+
+          if ("${{ inputs.width }}" -ne "") {
+            $args += "--width", "${{ inputs.width }}"
+          }
+
+          if ("${{ inputs.height }}" -ne "") {
+            $args += "--height", "${{ inputs.height }}"
+          }
+
+          if ("${{ inputs.fullscreen }}" -eq "true") {
+            $args += "--fullscreen"
+          }
+
+          if ("${{ inputs.hide_title_bar }}" -eq "true") {
+            $args += "--hide-title-bar"
+          }
+
+          Write-Host "Running: node dist/cli.js $($args -join ' ')"
+          node dist/cli.js $args
+
+          git checkout -- src-tauri/Cargo.lock
+
+      - name: Upload DMG (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v6
         with:
-          name: output-${{ inputs.platform }}.zip
-          path: node_modules/pake-cli/output/*
+          name: ${{ inputs.name }}-macOS
+          path: ${{ inputs.name }}.dmg
+          retention-days: 3
+
+      - name: Upload DEB (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ inputs.name }}-Linux-deb
+          path: ${{ inputs.name }}.deb
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Upload AppImage (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ inputs.name }}-Linux-AppImage
+          path: ${{ inputs.name }}.AppImage
+          retention-days: 3
+          if-no-files-found: ignore
+
+      - name: Upload MSI (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ inputs.name }}-Windows
+          path: ${{ inputs.name }}.msi
           retention-days: 3
 
       - name: Rust cache store
-        uses: actions/cache/save@v3
+        uses: actions/cache/save@v4.2.0
         if: steps.cache_store.outputs.cache-hit != 'true'
         with:
           path: |
@@ -150,5 +206,5 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            node_modules/pake-cli/src-tauri/target/
-          key: ${{ inputs.platform }}-cargo-${{ hashFiles('node_modules/pake-cli/src-tauri/Cargo.lock') }}
+            src-tauri/target/
+          key: ${{ runner.os }}-cargo-pake-${{ hashFiles('**/Cargo.lock') }}

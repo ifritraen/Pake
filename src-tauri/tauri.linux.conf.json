@@ -1,20 +1,12 @@
 {
-  "tauri": {
-    "bundle": {
-      "icon": ["png/weread_512.png"],
-      "identifier": "com.pake.weread",
-      "active": true,
-      "category": "DeveloperTool",
-      "copyright": "",
+  "bundle": {
+    "icon": ["png/weekly_512.png"],
+    "active": true,
+    "linux": {
       "deb": {
-        "depends": ["curl", "wget"],
-        "files": { "/usr/share/applications/com-pake-weread.desktop": "assets/com-pake-weread.desktop" }
-      },
-      "externalBin": [],
-      "longDescription": "",
-      "resources": [],
-      "shortDescription": "",
-      "targets": ["deb", "appimage"]
-    }
+        "depends": ["curl", "wget"]
+      }
+    },
+    "targets": ["deb", "appimage"]
   }
 }
